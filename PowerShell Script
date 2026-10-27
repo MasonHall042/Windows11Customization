@@ -5,9 +5,37 @@ function Pause-Toolkit {
     Read-Host "Press Enter to continue"
 }
 
-function Show-SystemInfo {
+function Write-MenuTitle {
+    param([string]$Title)
     Clear-Host
-    Write-Host "===== SYSTEM INFORMATION =====" -ForegroundColor Cyan
+    Write-Host "========================================" -ForegroundColor Cyan
+    Write-Host " $Title" -ForegroundColor Cyan
+    Write-Host "========================================" -ForegroundColor Cyan
+    Write-Host ""
+}
+
+function Set-RegistryDword {
+    param(
+        [string]$Path,
+        [string]$Name,
+        [int]$Value
+    )
+
+    if (-not (Test-Path -LiteralPath $Path)) {
+        New-Item -Path $Path -Force -ErrorAction Stop | Out-Null
+    }
+
+    New-ItemProperty -LiteralPath $Path `
+        -Name $Name -Value $Value `
+        -PropertyType DWord -Force -ErrorAction Stop | Out-Null
+}
+
+# ==========================================
+# UTILITIES
+# ==========================================
+
+function Show-SystemInfo {
+    Write-MenuTitle "SYSTEM INFORMATION"
 
     try {
         $os = Get-CimInstance Win32_OperatingSystem
@@ -19,7 +47,7 @@ function Show-SystemInfo {
         [PSCustomObject]@{
             OperatingSystem = $windowsName
             Edition         = $os.Caption
-            Version         = $versionInfo.DisplayVersion
+            DisplayVersion  = $versionInfo.DisplayVersion
             Build           = $build
             Architecture    = $os.OSArchitecture
             RAM_GB          = [math]::Round($computer.TotalPhysicalMemory / 1GB, 2)
@@ -27,15 +55,14 @@ function Show-SystemInfo {
         } | Format-List
     }
     catch {
-        Write-Host "Could not retrieve system information: $_" -ForegroundColor Red
+        Write-Host "Could not read system information: $_" -ForegroundColor Red
     }
 
     Pause-Toolkit
 }
 
 function Show-Storage {
-    Clear-Host
-    Write-Host "===== STORAGE INFORMATION =====" -ForegroundColor Cyan
+    Write-MenuTitle "STORAGE INFORMATION"
 
     try {
         $drives = Get-CimInstance Win32_LogicalDisk -Filter "DriveType=3"
@@ -49,118 +76,206 @@ function Show-Storage {
                 }
             }
         }
+
         $results | Format-Table -AutoSize
     }
     catch {
-        Write-Host "Could not retrieve storage information: $_" -ForegroundColor Red
+        Write-Host "Could not read storage information: $_" -ForegroundColor Red
     }
 
     Pause-Toolkit
 }
 
-function Open-TempFolder {
-    Start-Process explorer.exe -ArgumentList $env:TEMP
-}
-
-function Set-WindowsTheme {
+function Show-UtilitiesMenu {
     while ($true) {
-        Clear-Host
-        Write-Host "===== DARK / LIGHT MODE =====" -ForegroundColor Cyan
-        Write-Host "1. Dark mode"
-        Write-Host "2. Light mode"
+        Write-MenuTitle "UTILITIES"
+        Write-Host "1. System information"
+        Write-Host "2. Check storage"
+        Write-Host "3. Open temporary files folder"
         Write-Host "0. Back"
 
         $choice = Read-Host "Choose an option"
 
-        if ($choice -eq "0") {
-            return
+        switch ($choice) {
+            "1" { Show-SystemInfo }
+            "2" { Show-Storage }
+            "3" { Start-Process explorer.exe -ArgumentList $env:TEMP }
+            "0" { return }
+            default { Write-Host "Invalid choice."; Pause-Toolkit }
+        }
+    }
+}
+
+# ==========================================
+# THEMING
+# ==========================================
+
+function Restart-ExplorerSafely {
+    Write-Host "Refreshing Windows Explorer..." -ForegroundColor Yellow
+
+    try {
+        Get-Process explorer -ErrorAction SilentlyContinue |
+            Stop-Process -Force -ErrorAction SilentlyContinue
+
+        Start-Sleep -Seconds 2
+
+        if (-not (Get-Process explorer -ErrorAction SilentlyContinue)) {
+            Start-Process "$env:WINDIR\explorer.exe"
+            Start-Sleep -Seconds 2
         }
 
-        if ($choice -notin @("1", "2")) {
-            Write-Host "Invalid choice." -ForegroundColor Yellow
+        if (Get-Process explorer -ErrorAction SilentlyContinue) {
+            Write-Host "Windows Explorer is running." -ForegroundColor Green
+        }
+        else {
+            Write-Host "Start explorer.exe from Task Manager if the taskbar does not return." -ForegroundColor Yellow
+        }
+    }
+    catch {
+        Write-Host "Could not refresh Explorer: $_" -ForegroundColor Red
+    }
+}
+
+function Show-ThemeStatus {
+    Write-MenuTitle "CURRENT THEME"
+
+    $path = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize"
+
+    try {
+        $settings = Get-ItemProperty -LiteralPath $path -ErrorAction Stop
+
+        $appMode = if ($settings.AppsUseLightTheme -eq 0) { "Dark" } else { "Light" }
+        $systemMode = if ($settings.SystemUsesLightTheme -eq 0) { "Dark" } else { "Light" }
+
+        Write-Host "App appearance:    $appMode"
+        Write-Host "System appearance: $systemMode"
+    }
+    catch {
+        Write-Host "Could not read theme settings: $_" -ForegroundColor Red
+    }
+
+    Pause-Toolkit
+}
+
+function Set-WindowsTheme {
+    while ($true) {
+        Write-MenuTitle "SYSTEM THEMING"
+        Write-Host "1. Dark mode"
+        Write-Host "2. Light mode"
+        Write-Host "3. Open Windows color settings"
+        Write-Host "4. Check current theme"
+        Write-Host "0. Back"
+
+        $choice = Read-Host "Choose an option"
+
+        if ($choice -eq "0") { return }
+
+        if ($choice -eq "3") {
+            Start-Process "ms-settings:personalization-colors"
+            continue
+        }
+
+        if ($choice -eq "4") {
+            Show-ThemeStatus
+            continue
+        }
+
+        if ($choice -ne "1" -and $choice -ne "2") {
+            Write-Host "Invalid choice."
             Pause-Toolkit
             continue
         }
 
-        $themeValue = 1
-        $themeName = "Light"
-
+        $value = 1
+        $name = "Light"
         if ($choice -eq "1") {
-            $themeValue = 0
-            $themeName = "Dark"
+            $value = 0
+            $name = "Dark"
         }
 
         $path = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize"
 
         try {
-            if (-not (Test-Path $path)) {
-                New-Item -Path $path -Force | Out-Null
+            Set-RegistryDword -Path $path -Name "AppsUseLightTheme" -Value $value
+            Set-RegistryDword -Path $path -Name "SystemUsesLightTheme" -Value $value
+
+            $check = Get-ItemProperty -LiteralPath $path -ErrorAction Stop
+
+            if ([int]$check.AppsUseLightTheme -ne $value -or
+                [int]$check.SystemUsesLightTheme -ne $value) {
+                throw "Theme values did not verify correctly."
             }
 
-            Set-ItemProperty -Path $path -Name "AppsUseLightTheme" -Value $themeValue -Type DWord
-            Set-ItemProperty -Path $path -Name "SystemUsesLightTheme" -Value $themeValue -Type DWord
-
-            $verify = Get-ItemProperty -Path $path
-
-            if ($verify.AppsUseLightTheme -ne $themeValue -or
-                $verify.SystemUsesLightTheme -ne $themeValue) {
-                throw "Windows did not save both theme settings."
-            }
-
-            # Broadcast one settings-change notification.
-            if (-not ("CustomizeWindows11ThemeRefresh" -as [type])) {
-                Add-Type -TypeDefinition @"
-using System;
-using System.Runtime.InteropServices;
-
-public static class CustomizeWindows11ThemeRefresh
-{
-    [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    public static extern bool SendMessageTimeout(
-        IntPtr hWnd,
-        uint Msg,
-        IntPtr wParam,
-        string lParam,
-        uint flags,
-        uint timeout,
-        out IntPtr result
-    );
-}
-"@
-            }
-
-            $result = [IntPtr]::Zero
-            $notified = [CustomizeWindows11ThemeRefresh]::SendMessageTimeout(
-                [IntPtr]0xffff,
-                [uint32]0x001A,
-                [IntPtr]::Zero,
-                "ImmersiveColorSet",
-                [uint32]2,
-                [uint32]3000,
-                [ref]$result
-            )
-
-            Clear-Host
-            Write-Host "$themeName mode selected." -ForegroundColor Green
-
-            if (-not $notified) {
-                Write-Host "Windows saved the theme, but the refresh notification did not complete." -ForegroundColor Yellow
-            }
-
-            Write-Host "If the taskbar remains visually stuck, restart Windows Explorer once."
+            Write-Host "$name mode settings saved." -ForegroundColor Green
+            Write-Host "Explorer will refresh; the taskbar may disappear briefly."
+            Restart-ExplorerSafely
         }
         catch {
             Write-Host "Could not apply the theme: $_" -ForegroundColor Red
+            Start-Process "ms-settings:personalization-colors"
         }
 
         Pause-Toolkit
     }
 }
 
+function Set-Transparency {
+    Write-MenuTitle "TRANSPARENCY EFFECTS"
+    Write-Host "1. Enable transparency"
+    Write-Host "2. Disable transparency"
+    Write-Host "0. Back"
+
+    $choice = Read-Host "Choose an option"
+
+    if ($choice -eq "0") { return }
+    if ($choice -ne "1" -and $choice -ne "2") {
+        Write-Host "Invalid choice."
+        Pause-Toolkit
+        return
+    }
+
+    $value = if ($choice -eq "1") { 1 } else { 0 }
+
+    try {
+        Set-RegistryDword `
+            -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize" `
+            -Name "EnableTransparency" -Value $value
+
+        Write-Host "Transparency setting saved." -ForegroundColor Green
+    }
+    catch {
+        Write-Host "Could not change transparency: $_" -ForegroundColor Red
+    }
+
+    Pause-Toolkit
+}
+
+function Show-ThemingMenu {
+    while ($true) {
+        Write-MenuTitle "SYSTEM THEMING"
+        Write-Host "1. Dark / light mode"
+        Write-Host "2. Transparency effects"
+        Write-Host "3. Personalization settings"
+        Write-Host "0. Back"
+
+        $choice = Read-Host "Choose an option"
+
+        switch ($choice) {
+            "1" { Set-WindowsTheme }
+            "2" { Set-Transparency }
+            "3" { Start-Process "ms-settings:personalization" }
+            "0" { return }
+            default { Write-Host "Invalid choice."; Pause-Toolkit }
+        }
+    }
+}
+
+# ==========================================
+# TASKBAR AND INPUT
+# ==========================================
+
 function Set-TaskbarAlignment {
-    Clear-Host
-    Write-Host "===== TASKBAR ALIGNMENT =====" -ForegroundColor Cyan
+    Write-MenuTitle "TASKBAR ALIGNMENT"
     Write-Host "1. Left"
     Write-Host "2. Center"
     Write-Host "0. Back"
@@ -168,54 +283,85 @@ function Set-TaskbarAlignment {
     $choice = Read-Host "Choose an option"
 
     if ($choice -eq "0") { return }
-
     if ($choice -ne "1" -and $choice -ne "2") {
-        Write-Host "Invalid choice." -ForegroundColor Yellow
+        Write-Host "Invalid choice."
         Pause-Toolkit
         return
     }
 
-    $alignment = 1
-    if ($choice -eq "1") { $alignment = 0 }
-
-    $path = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced"
+    $value = if ($choice -eq "1") { 0 } else { 1 }
 
     try {
-        Set-ItemProperty -Path $path -Name "TaskbarAl" -Value $alignment -Type DWord
-        Write-Host "Taskbar alignment saved." -ForegroundColor Green
+        Set-RegistryDword `
+            -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" `
+            -Name "TaskbarAl" -Value $value
 
-        $restart = Read-Host "Restart Windows Explorer now? (Y/N)"
+        Write-Host "Taskbar alignment saved." -ForegroundColor Green
+        $restart = Read-Host "Restart Explorer now? (Y/N)"
+
         if ($restart -match "^(Y|YES)$") {
-            Stop-Process -Name explorer -Force -ErrorAction SilentlyContinue
-            Start-Sleep -Seconds 2
-            Start-Process explorer.exe
+            Restart-ExplorerSafely
         }
     }
     catch {
-        Write-Host "Could not change taskbar alignment: $_" -ForegroundColor Red
+        Write-Host "Could not change alignment: $_" -ForegroundColor Red
     }
 
     Pause-Toolkit
 }
 
-function Open-SettingsPage {
-    param([string]$Title, [string]$Uri)
-    Write-Host "Opening $Title..."
-    Start-Process $Uri
+function Show-TaskbarMenu {
+    while ($true) {
+        Write-MenuTitle "TASKBAR SETTINGS"
+        Write-Host "1. Set taskbar alignment"
+        Write-Host "2. Open taskbar settings"
+        Write-Host "0. Back"
+
+        $choice = Read-Host "Choose an option"
+
+        switch ($choice) {
+            "1" { Set-TaskbarAlignment }
+            "2" { Start-Process "ms-settings:taskbar" }
+            "0" { return }
+            default { Write-Host "Invalid choice."; Pause-Toolkit }
+        }
+    }
 }
+
+function Show-InputMenu {
+    while ($true) {
+        Write-MenuTitle "INPUT SETTINGS"
+        Write-Host "1. Mouse settings"
+        Write-Host "2. Keyboard / typing settings"
+        Write-Host "0. Back"
+
+        $choice = Read-Host "Choose an option"
+
+        switch ($choice) {
+            "1" { Start-Process "ms-settings:mousetouchpad" }
+            "2" { Start-Process "ms-settings:typing" }
+            "0" { return }
+            default { Write-Host "Invalid choice."; Pause-Toolkit }
+        }
+    }
+}
+
+# ==========================================
+# SOFTWARE CENTER
+# ==========================================
 
 function Install-Software {
     param([string]$Name, [string]$Id, [string]$Url)
 
-    Clear-Host
-    Write-Host "===== INSTALL $Name =====" -ForegroundColor Cyan
+    Write-MenuTitle "INSTALL $Name"
     $winget = Get-Command winget.exe -ErrorAction SilentlyContinue
 
-    if ($null -ne $winget) {
+    if ($winget) {
         try {
             & $winget.Source install --id $Id --exact --scope user --source winget --accept-package-agreements --accept-source-agreements
+
             if ($LASTEXITCODE -eq 0) {
-                Write-Host "$Name installed successfully." -ForegroundColor Green
+                Write-Host "$Name installation completed." -ForegroundColor Green
                 Pause-Toolkit
                 return
             }
@@ -225,107 +371,32 @@ function Install-Software {
         }
     }
 
-    Write-Host "Installation was not completed. Opening the official download page."
+    Write-Host "Opening the official download page."
     Start-Process $Url
     Pause-Toolkit
 }
 
 function Download-WordPress {
-    Clear-Host
+    Write-MenuTitle "WORDPRESS DOWNLOAD"
     $destination = Join-Path $HOME "Downloads\wordpress.zip"
 
     try {
         Invoke-WebRequest -Uri "https://wordpress.org/latest.zip" -OutFile $destination
-        Write-Host "WordPress ZIP saved to $destination" -ForegroundColor Green
+        Write-Host "Saved WordPress ZIP to $destination" -ForegroundColor Green
+        Write-Host "WordPress requires a web server, PHP, and a database."
         Start-Process explorer.exe -ArgumentList (Join-Path $HOME "Downloads")
-        Write-Host "WordPress needs a compatible web server, PHP, and a database to run."
     }
     catch {
-        Write-Host "Download failed. Opening the official download page." -ForegroundColor Yellow
+        Write-Host "Download failed; opening the official download page."
         Start-Process "https://wordpress.org/download/"
     }
 
     Pause-Toolkit
 }
 
-function Install-FloatingSandbox {
-    Clear-Host
-    $winget = Get-Command winget.exe -ErrorAction SilentlyContinue
-
-    if ($null -ne $winget) {
-        try {
-            & $winget.Source install --name "Floating Sandbox" --exact --source winget --accept-package-agreements --accept-source-agreements
-            if ($LASTEXITCODE -eq 0) {
-                Write-Host "WinGet reports that installation completed." -ForegroundColor Green
-                Pause-Toolkit
-                return
-            }
-        }
-        catch {
-            Write-Host "Automatic installation could not be completed." -ForegroundColor Yellow
-        }
-    }
-
-    Write-Host "Opening the game's download page."
-    Start-Process "https://gamejolt.com/games/floating-sandbox/353572"
-    Write-Host "Your browser controls where downloaded files are saved."
-    Pause-Toolkit
-}
-
-function Show-UtilitiesMenu {
-    while ($true) {
-        Clear-Host
-        Write-Host "===== UTILITIES =====" -ForegroundColor Cyan
-        Write-Host "1. System information"
-        Write-Host "2. Check storage"
-        Write-Host "3. Open temporary files folder"
-        Write-Host "0. Back"
-
-        $choice = Read-Host "Choose an option"
-        switch ($choice) {
-            "1" { Show-SystemInfo }
-            "2" { Show-Storage }
-            "3" { Open-TempFolder }
-            "0" { return }
-            default { Write-Host "Invalid choice."; Pause-Toolkit }
-        }
-    }
-}
-
-function Show-SettingsMenu {
-    while ($true) {
-        Clear-Host
-        Write-Host "===== SETTINGS AND CUSTOMIZATION =====" -ForegroundColor Cyan
-        Write-Host "1. Dark / light mode"
-        Write-Host "2. Taskbar alignment"
-        Write-Host "3. Personalization settings"
-        Write-Host "4. Mouse settings"
-        Write-Host "5. Keyboard settings"
-        Write-Host "6. Installed apps"
-        Write-Host "7. Network settings"
-        Write-Host "8. Windows Update"
-        Write-Host "0. Back"
-
-        $choice = Read-Host "Choose an option"
-        switch ($choice) {
-            "1" { Set-WindowsTheme }
-            "2" { Set-TaskbarAlignment }
-            "3" { Open-SettingsPage "Personalization" "ms-settings:personalization" }
-            "4" { Open-SettingsPage "Mouse" "ms-settings:mousetouchpad" }
-            "5" { Open-SettingsPage "Keyboard" "ms-settings:typing" }
-            "6" { Open-SettingsPage "Installed apps" "ms-settings:appsfeatures" }
-            "7" { Open-SettingsPage "Network" "ms-settings:network-status" }
-            "8" { Open-SettingsPage "Windows Update" "ms-settings:windowsupdate" }
-            "0" { return }
-            default { Write-Host "Invalid choice."; Pause-Toolkit }
-        }
-    }
-}
-
 function Show-SoftwareMenu {
     while ($true) {
-        Clear-Host
-        Write-Host "===== SOFTWARE CENTER =====" -ForegroundColor Cyan
+        Write-MenuTitle "SOFTWARE CENTER"
         Write-Host "1. Install Firefox"
         Write-Host "2. Install GitHub Desktop"
         Write-Host "3. Install Git"
@@ -336,6 +407,7 @@ function Show-SoftwareMenu {
         Write-Host "0. Back"
 
         $choice = Read-Host "Choose an option"
+
         switch ($choice) {
             "1" { Install-Software "Firefox" "Mozilla.Firefox" "https://www.mozilla.org/firefox/" }
             "2" { Install-Software "GitHub Desktop" "GitHub.GitHubDesktop" "https://desktop.github.com/" }
@@ -350,14 +422,170 @@ function Show-SoftwareMenu {
     }
 }
 
+# ==========================================
+# FLOATING SANDBOX INSTALLATION
+# ==========================================
+
+function Test-FloatingSandboxInstalled {
+    $candidates = @(
+        (Join-Path $env:ProgramFiles "Floating Sandbox\FloatingSandbox.exe"),
+        (Join-Path ${env:ProgramFiles(x86)} "Floating Sandbox\FloatingSandbox.exe"),
+        (Join-Path $env:LOCALAPPDATA "Programs\Floating Sandbox\FloatingSandbox.exe")
+    )
+
+    foreach ($candidate in $candidates) {
+        if ($candidate -and (Test-Path -LiteralPath $candidate)) {
+            return $candidate
+        }
+    }
+
+    $startMenuPaths = @(
+        (Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs"),
+        (Join-Path $env:ProgramData "Microsoft\Windows\Start Menu\Programs")
+    )
+
+    foreach ($folder in $startMenuPaths) {
+        if (Test-Path -LiteralPath $folder) {
+            $shortcut = Get-ChildItem -LiteralPath $folder -Filter "*Floating*Sandbox*.lnk" -Recurse -ErrorAction SilentlyContinue |
+                Select-Object -First 1
+
+            if ($shortcut) {
+                return $shortcut.FullName
+            }
+        }
+    }
+
+    return $null
+}
+
+function Install-FloatingSandbox {
+    Write-MenuTitle "FLOATING SANDBOX INSTALLER"
+
+    $existing = Test-FloatingSandboxInstalled
+
+    if ($existing) {
+        Write-Host "Floating Sandbox appears to be installed:" -ForegroundColor Green
+        Write-Host $existing
+        $launch = Read-Host "Launch the game now? (Y/N)"
+
+        if ($launch -match "^(Y|YES)$") {
+            Start-Process -FilePath $existing
+        }
+
+        Pause-Toolkit
+        return
+    }
+
+    Write-Host "Step 1: Checking whether WinGet has a matching package."
+    $winget = Get-Command winget.exe -ErrorAction SilentlyContinue
+    $installedByWinget = $false
+
+    if ($winget) {
+        try {
+            & $winget.Source install --name "Floating Sandbox" --exact --source winget --accept-package-agreements --accept-source-agreements
+
+            if ($LASTEXITCODE -eq 0) {
+                Start-Sleep -Seconds 3
+                $existing = Test-FloatingSandboxInstalled
+
+                if ($existing) {
+                    $installedByWinget = $true
+                }
+            }
+        }
+        catch {
+            Write-Host "WinGet could not install the game. Continuing with the official download route." -ForegroundColor Yellow
+        }
+    }
+
+    if ($installedByWinget) {
+        Write-Host "Floating Sandbox installation was verified." -ForegroundColor Green
+        $launch = Read-Host "Launch the game now? (Y/N)"
+        if ($launch -match "^(Y|YES)$") {
+            Start-Process -FilePath $existing
+        }
+        Pause-Toolkit
+        return
+    }
+
+    Write-Host ""
+    Write-Host "WinGet did not provide a verified installation."
+    Write-Host "Opening the official download page."
+    Write-Host "Download the Windows 64-bit installer if your Windows is 64-bit."
+    Write-Host "Avoid the Game Jolt desktop client; use the browser download."
+    Start-Process "https://gamejolt.com/games/floating-sandbox/353572"
+
+    Write-Host ""
+    Write-Host "After the installer downloads, save it in your Downloads folder."
+    Write-Host "This script will look for a Floating Sandbox MSI there."
+    Read-Host "Press Enter after the download finishes"
+
+    $installer = Get-ChildItem -LiteralPath (Join-Path $HOME "Downloads") -File -Filter "*.msi" -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -match "floating.*sandbox|sandbox.*floating" } |
+        Sort-Object LastWriteTime -Descending |
+        Select-Object -First 1
+
+    if (-not $installer) {
+        Write-Host "No matching installer was found in Downloads." -ForegroundColor Yellow
+        Write-Host "Nothing was installed. Download the official Windows installer and run Option 1 again."
+        Pause-Toolkit
+        return
+    }
+
+    Write-Host ""
+    Write-Host "Found installer: $($installer.Name)"
+    Write-Host "The Windows Installer may request confirmation or administrator permission."
+    $confirm = Read-Host "Run this installer now? (Y/N)"
+
+    if ($confirm -notmatch "^(Y|YES)$") {
+        Write-Host "Installation cancelled."
+        Pause-Toolkit
+        return
+    }
+
+    try {
+        $process = Start-Process -FilePath "msiexec.exe" `
+            -ArgumentList @("/i", "`"$($installer.FullName)`"") `
+            -Wait -PassThru
+
+        if ($process.ExitCode -eq 0) {
+            Start-Sleep -Seconds 3
+            $existing = Test-FloatingSandboxInstalled
+
+            if ($existing) {
+                Write-Host "Floating Sandbox is installed." -ForegroundColor Green
+                $launch = Read-Host "Launch the game now? (Y/N)"
+                if ($launch -match "^(Y|YES)$") {
+                    Start-Process -FilePath $existing
+                }
+            }
+            else {
+                Write-Host "The installer completed, but the game executable was not found in the usual locations." -ForegroundColor Yellow
+                Write-Host "Check the Start menu for Floating Sandbox."
+            }
+        }
+        elseif ($process.ExitCode -eq 1602) {
+            Write-Host "Installation was cancelled." -ForegroundColor Yellow
+        }
+        else {
+            Write-Host "Windows Installer returned exit code $($process.ExitCode)." -ForegroundColor Red
+        }
+    }
+    catch {
+        Write-Host "Could not run the installer: $_" -ForegroundColor Red
+    }
+
+    Pause-Toolkit
+}
+
 function Show-GamesMenu {
     while ($true) {
-        Clear-Host
-        Write-Host "===== DOWNLOAD GAMES =====" -ForegroundColor Cyan
-        Write-Host "1. Install Floating Sandbox"
+        Write-MenuTitle "DOWNLOAD GAMES"
+        Write-Host "1. Install / launch Floating Sandbox"
         Write-Host "0. Back"
 
         $choice = Read-Host "Choose an option"
+
         switch ($choice) {
             "1" { Install-FloatingSandbox }
             "0" { return }
@@ -366,26 +594,225 @@ function Show-GamesMenu {
     }
 }
 
+# ==========================================
+# UNINSTALL PROGRAMS
+# ==========================================
+
+function Get-InstalledDesktopPrograms {
+    # Read standard uninstall registry entries only. This avoids Win32_Product,
+    # which can trigger Windows Installer consistency checks/repairs.
+    $registryPaths = @(
+        'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*',
+        'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*',
+        'HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*'
+    )
+
+    $apps = foreach ($registryPath in $registryPaths) {
+        Get-ItemProperty -Path $registryPath -ErrorAction SilentlyContinue |
+            Where-Object {
+                $_.DisplayName -and
+                ($_.UninstallString -or $_.QuietUninstallString) -and
+                $_.SystemComponent -ne 1 -and
+                -not $_.ParentKeyName -and
+                $_.ReleaseType -notmatch 'Update|Hotfix|Security Update'
+            } |
+            ForEach-Object {
+                [PSCustomObject]@{
+                    Name               = ([string]$_.DisplayName).Trim()
+                    Version            = [string]$_.DisplayVersion
+                    Publisher          = [string]$_.Publisher
+                    InstallLocation    = [string]$_.InstallLocation
+                    UninstallString    = [string]$_.UninstallString
+                    QuietUninstall     = [string]$_.QuietUninstallString
+                    RegistryKey        = [string]$_.PSPath
+                    RegistryName       = [string]$_.PSChildName
+                    WindowsInstaller   = [int]$_.WindowsInstaller
+                }
+            }
+    }
+
+    # De-duplicate entries visible through multiple registry views.
+    $apps |
+        Sort-Object Name, Version, RegistryKey -Unique |
+        Sort-Object Name, Publisher
+}
+
+function Invoke-RegisteredUninstaller {
+    param([Parameter(Mandatory = $true)]$Program)
+
+    $command = if (-not [string]::IsNullOrWhiteSpace($Program.QuietUninstall)) {
+        [string]$Program.QuietUninstall
+    }
+    else {
+        [string]$Program.UninstallString
+    }
+
+    if ([string]::IsNullOrWhiteSpace($command)) {
+        throw 'Windows has no registered uninstall command for this program.'
+    }
+
+    $command = [Environment]::ExpandEnvironmentVariables($command.Trim())
+
+    # MSI packages should be removed with /x, not /i. Use the product GUID
+    # when available, and leave the uninstall UI interactive where possible.
+    if ($command -match '(?i)msiexec(?:\.exe)?' -or $Program.WindowsInstaller -eq 1) {
+        $guidMatch = [regex]::Match($command, '\{[0-9A-Fa-f]{8}-(?:[0-9A-Fa-f]{4}-){3}[0-9A-Fa-f]{12}\}')
+        if ($guidMatch.Success) {
+            $arguments = "/x $($guidMatch.Value)"
+            $process = Start-Process -FilePath 'msiexec.exe' -ArgumentList $arguments -Wait -PassThru
+            return $process.ExitCode
+        }
+
+        $arguments = $command -replace '(?i)^.*?msiexec(?:\.exe)?\s*', ''
+        $arguments = $arguments -replace '(?i)(^|\s)/i(?=\s|\{)', '$1/x'
+        if ($arguments -notmatch '(?i)(^|\s)/x(\s|$)') {
+            $arguments = "/x $arguments"
+        }
+        $process = Start-Process -FilePath 'msiexec.exe' -ArgumentList $arguments -Wait -PassThru
+        return $process.ExitCode
+    }
+
+    # Split the registered command into executable and arguments without
+    # running it through cmd.exe. Support quoted and unquoted .exe paths.
+    $exe = $null
+    $arguments = ''
+
+    if ($command -match '^\s*"(?<exe>[^"]+\.exe)"\s*(?<args>.*)$') {
+        $exe = $Matches.exe
+        $arguments = $Matches.args
+    }
+    elseif ($command -match '^\s*(?<exe>.+?\.exe)\s*(?<args>.*)$') {
+        $exe = $Matches.exe.Trim().Trim('"')
+        $arguments = $Matches.args
+    }
+    else {
+        throw "The registered uninstall command is not a supported executable command: $command"
+    }
+
+    if (-not (Test-Path -LiteralPath $exe -PathType Leaf)) {
+        # Some entries rely on PATH resolution (for example, rundll32.exe).
+        $resolved = Get-Command $exe -ErrorAction SilentlyContinue
+        if ($resolved) { $exe = $resolved.Source }
+        else { throw "The uninstaller executable could not be found: $exe" }
+    }
+
+    $process = Start-Process -FilePath $exe -ArgumentList $arguments -Wait -PassThru
+    return $process.ExitCode
+}
+
+function Show-UninstallMenu {
+    $pageSize = 20
+    $page = 0
+
+    while ($true) {
+        Write-MenuTitle 'UNINSTALL PROGRAMS'
+        Write-Host 'Choose a listed desktop program to start its registered uninstaller.' -ForegroundColor Gray
+        Write-Host 'Some programs require administrator permission or cannot be removed by a standard user.' -ForegroundColor Yellow
+        Write-Host ''
+
+        $apps = @(Get-InstalledDesktopPrograms)
+        if ($apps.Count -eq 0) {
+            Write-Host 'No removable desktop programs were found in the uninstall registry.' -ForegroundColor Yellow
+            Write-Host 'Microsoft Store/system apps may not appear in this list.'
+            Pause-Toolkit
+            return
+        }
+
+        $pageCount = [math]::Max(1, [math]::Ceiling($apps.Count / [double]$pageSize))
+        if ($page -ge $pageCount) { $page = $pageCount - 1 }
+        if ($page -lt 0) { $page = 0 }
+        $start = $page * $pageSize
+        $end = [math]::Min($start + $pageSize - 1, $apps.Count - 1)
+        $visibleApps = @($apps[$start..$end])
+
+        for ($i = 0; $i -lt $visibleApps.Count; $i++) {
+            $number = $i + 1
+            $app = $visibleApps[$i]
+            $versionText = if ($app.Version) { " (v$($app.Version))" } else { '' }
+            Write-Host ('{0,2}. {1}{2}' -f $number, $app.Name, $versionText)
+        }
+
+        Write-Host ''
+        Write-Host ("Page {0} of {1} — {2} programs found" -f ($page + 1), $pageCount, $apps.Count) -ForegroundColor Cyan
+        if ($page -gt 0) { Write-Host 'P. Previous page' }
+        if ($page -lt ($pageCount - 1)) { Write-Host 'N. Next page' }
+        Write-Host 'R. Refresh list'
+        Write-Host '0. Back'
+        $choice = (Read-Host 'Enter a program number or command').Trim()
+
+        if ($choice -eq '0') { return }
+        if ($choice -match '^(?i)R$') { $page = 0; continue }
+        if ($choice -match '^(?i)N$' -and $page -lt ($pageCount - 1)) { $page++; continue }
+        if ($choice -match '^(?i)P$' -and $page -gt 0) { $page--; continue }
+
+        $selection = 0
+        if (-not [int]::TryParse($choice, [ref]$selection) -or
+            $selection -lt 1 -or $selection -gt $visibleApps.Count) {
+            Write-Host 'Invalid selection.' -ForegroundColor Red
+            Pause-Toolkit
+            continue
+        }
+
+        $program = $visibleApps[$selection - 1]
+        Write-Host ''
+        Write-Host "Selected: $($program.Name)" -ForegroundColor Cyan
+        if ($program.Version) { Write-Host "Version: $($program.Version)" }
+        if ($program.Publisher) { Write-Host "Publisher: $($program.Publisher)" }
+        Write-Host ''
+        Write-Host 'The program uninstaller will open normally. Review its prompts before continuing.' -ForegroundColor Yellow
+        $confirm = Read-Host "Start uninstall for '$($program.Name)'? (Y/N)"
+        if ($confirm -notmatch '^(?i:Y|YES)$') { continue }
+
+        try {
+            $exitCode = Invoke-RegisteredUninstaller -Program $program
+            if ($exitCode -eq 0) {
+                Write-Host 'The uninstaller reported that it completed.' -ForegroundColor Green
+            }
+            elseif ($exitCode -eq 1602) {
+                Write-Host 'The uninstall was cancelled.' -ForegroundColor Yellow
+            }
+            elseif ($exitCode -eq 3010) {
+                Write-Host 'The uninstall completed; Windows says a restart is required.' -ForegroundColor Yellow
+            }
+            else {
+                Write-Host "The uninstaller exited with code $exitCode. It may have been cancelled or may require administrator permission." -ForegroundColor Yellow
+            }
+        }
+        catch {
+            Write-Host "Could not start or complete the uninstaller: $($_.Exception.Message)" -ForegroundColor Red
+        }
+
+        Write-Host ''
+        Read-Host 'Press Enter to refresh the program list'
+        $page = 0
+    }
+}
+
+# ==========================================
+# MAIN MENU
+# ==========================================
+
 while ($true) {
-    Clear-Host
-    Write-Host "====================================" -ForegroundColor Cyan
-    Write-Host "     WINDOWS 11 CUSTOMIZATION" -ForegroundColor Cyan
-    Write-Host "====================================" -ForegroundColor Cyan
-    Write-Host "1. Utilities"
-    Write-Host "2. Settings and customization"
-    Write-Host "3. Software center"
-    Write-Host "4. Download Games"
+    Write-MenuTitle "CUSTOMIZE WINDOWS 11"
+    Write-Host "1. System theming"
+    Write-Host "2. Taskbar settings"
+    Write-Host "3. Input settings"
+    Write-Host "4. Software center"
     Write-Host "5. Uninstall programs"
+    Write-Host "6. Utilities"
+    Write-Host "7. Download Games"
     Write-Host "0. Exit"
 
     $choice = Read-Host "Choose an option"
 
     switch ($choice) {
-        "1" { Show-UtilitiesMenu }
-        "2" { Show-SettingsMenu }
-        "3" { Show-SoftwareMenu }
-        "4" { Show-GamesMenu }
-        "5" { Start-Process "ms-settings:appsfeatures" }
+        "1" { Show-ThemingMenu }
+        "2" { Show-TaskbarMenu }
+        "3" { Show-InputMenu }
+        "4" { Show-SoftwareMenu }
+        "5" { Show-UninstallMenu }
+        "6" { Show-UtilitiesMenu }
+        "7" { Show-GamesMenu }
         "0" { exit }
         default { Write-Host "Invalid choice."; Pause-Toolkit }
     }
