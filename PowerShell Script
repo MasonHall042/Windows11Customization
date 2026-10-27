@@ -1,88 +1,392 @@
-
-$folder = Join-Path $HOME "Downloads"
-$script = Join-Path $folder "Software_Download_Center.ps1"
-
-New-Item -ItemType Directory -Path $folder -Force | Out-Null
-
-@'
 $ErrorActionPreference = "Continue"
 
-function Install-App {
-    param([string]$Name, [string]$Id, [string]$Url)
+function Pause-Toolkit {
+    Write-Host ""
+    Read-Host "Press Enter to continue"
+}
 
-    if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
-        Write-Host "winget isn't available. Opening official download page..."
-        Start-Process $Url
+function Show-SystemInfo {
+    Clear-Host
+    Write-Host "===== SYSTEM INFORMATION =====" -ForegroundColor Cyan
+
+    try {
+        $os = Get-CimInstance Win32_OperatingSystem
+        $computer = Get-CimInstance Win32_ComputerSystem
+        $versionInfo = Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion"
+        $build = [int]$versionInfo.CurrentBuildNumber
+        $windowsName = if ($build -ge 22000) { "Windows 11" } else { $os.Caption }
+
+        [PSCustomObject]@{
+            OperatingSystem = $windowsName
+            Edition         = $os.Caption
+            Version         = $versionInfo.DisplayVersion
+            Build           = $build
+            Architecture    = $os.OSArchitecture
+            RAM_GB          = [math]::Round($computer.TotalPhysicalMemory / 1GB, 2)
+            ComputerName    = $computer.Name
+        } | Format-List
+    }
+    catch {
+        Write-Host "Could not retrieve system information: $_" -ForegroundColor Red
+    }
+
+    Pause-Toolkit
+}
+
+function Show-Storage {
+    Clear-Host
+    Write-Host "===== STORAGE INFORMATION =====" -ForegroundColor Cyan
+
+    try {
+        $drives = Get-CimInstance Win32_LogicalDisk -Filter "DriveType=3"
+        $results = foreach ($drive in $drives) {
+            if ($drive.Size -gt 0) {
+                [PSCustomObject]@{
+                    Drive   = $drive.DeviceID
+                    Size_GB = [math]::Round($drive.Size / 1GB, 2)
+                    Used_GB = [math]::Round(($drive.Size - $drive.FreeSpace) / 1GB, 2)
+                    Free_GB = [math]::Round($drive.FreeSpace / 1GB, 2)
+                }
+            }
+        }
+        $results | Format-Table -AutoSize
+    }
+    catch {
+        Write-Host "Could not retrieve storage information: $_" -ForegroundColor Red
+    }
+
+    Pause-Toolkit
+}
+
+function Open-TempFolder {
+    Start-Process explorer.exe -ArgumentList $env:TEMP
+}
+
+function Set-WindowsTheme {
+    while ($true) {
+        Clear-Host
+        Write-Host "===== DARK / LIGHT MODE =====" -ForegroundColor Cyan
+        Write-Host "1. Dark mode"
+        Write-Host "2. Light mode"
+        Write-Host "0. Back"
+
+        $choice = Read-Host "Choose an option"
+
+        if ($choice -eq "0") {
+            return
+        }
+
+        if ($choice -notin @("1", "2")) {
+            Write-Host "Invalid choice." -ForegroundColor Yellow
+            Pause-Toolkit
+            continue
+        }
+
+        $themeValue = 1
+        $themeName = "Light"
+
+        if ($choice -eq "1") {
+            $themeValue = 0
+            $themeName = "Dark"
+        }
+
+        $path = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize"
+
+        try {
+            if (-not (Test-Path $path)) {
+                New-Item -Path $path -Force | Out-Null
+            }
+
+            Set-ItemProperty -Path $path -Name "AppsUseLightTheme" -Value $themeValue -Type DWord
+            Set-ItemProperty -Path $path -Name "SystemUsesLightTheme" -Value $themeValue -Type DWord
+
+            $verify = Get-ItemProperty -Path $path
+
+            if ($verify.AppsUseLightTheme -ne $themeValue -or
+                $verify.SystemUsesLightTheme -ne $themeValue) {
+                throw "Windows did not save both theme settings."
+            }
+
+            # Broadcast one settings-change notification.
+            if (-not ("CustomizeWindows11ThemeRefresh" -as [type])) {
+                Add-Type -TypeDefinition @"
+using System;
+using System.Runtime.InteropServices;
+
+public static class CustomizeWindows11ThemeRefresh
+{
+    [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool SendMessageTimeout(
+        IntPtr hWnd,
+        uint Msg,
+        IntPtr wParam,
+        string lParam,
+        uint flags,
+        uint timeout,
+        out IntPtr result
+    );
+}
+"@
+            }
+
+            $result = [IntPtr]::Zero
+            $notified = [CustomizeWindows11ThemeRefresh]::SendMessageTimeout(
+                [IntPtr]0xffff,
+                [uint32]0x001A,
+                [IntPtr]::Zero,
+                "ImmersiveColorSet",
+                [uint32]2,
+                [uint32]3000,
+                [ref]$result
+            )
+
+            Clear-Host
+            Write-Host "$themeName mode selected." -ForegroundColor Green
+
+            if (-not $notified) {
+                Write-Host "Windows saved the theme, but the refresh notification did not complete." -ForegroundColor Yellow
+            }
+
+            Write-Host "If the taskbar remains visually stuck, restart Windows Explorer once."
+        }
+        catch {
+            Write-Host "Could not apply the theme: $_" -ForegroundColor Red
+        }
+
+        Pause-Toolkit
+    }
+}
+
+function Set-TaskbarAlignment {
+    Clear-Host
+    Write-Host "===== TASKBAR ALIGNMENT =====" -ForegroundColor Cyan
+    Write-Host "1. Left"
+    Write-Host "2. Center"
+    Write-Host "0. Back"
+
+    $choice = Read-Host "Choose an option"
+
+    if ($choice -eq "0") { return }
+
+    if ($choice -ne "1" -and $choice -ne "2") {
+        Write-Host "Invalid choice." -ForegroundColor Yellow
+        Pause-Toolkit
         return
     }
 
-    $confirm = Read-Host "Install $Name? (Y/N)"
-    if ($confirm -notin @("Y","y")) { return }
+    $alignment = 1
+    if ($choice -eq "1") { $alignment = 0 }
 
-    winget install --id $Id --exact --source winget
+    $path = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced"
+
+    try {
+        Set-ItemProperty -Path $path -Name "TaskbarAl" -Value $alignment -Type DWord
+        Write-Host "Taskbar alignment saved." -ForegroundColor Green
+
+        $restart = Read-Host "Restart Windows Explorer now? (Y/N)"
+        if ($restart -match "^(Y|YES)$") {
+            Stop-Process -Name explorer -Force -ErrorAction SilentlyContinue
+            Start-Sleep -Seconds 2
+            Start-Process explorer.exe
+        }
+    }
+    catch {
+        Write-Host "Could not change taskbar alignment: $_" -ForegroundColor Red
+    }
+
+    Pause-Toolkit
+}
+
+function Open-SettingsPage {
+    param([string]$Title, [string]$Uri)
+    Write-Host "Opening $Title..."
+    Start-Process $Uri
+}
+
+function Install-Software {
+    param([string]$Name, [string]$Id, [string]$Url)
+
+    Clear-Host
+    Write-Host "===== INSTALL $Name =====" -ForegroundColor Cyan
+    $winget = Get-Command winget.exe -ErrorAction SilentlyContinue
+
+    if ($null -ne $winget) {
+        try {
+            & $winget.Source install --id $Id --exact --scope user --source winget --accept-package-agreements --accept-source-agreements
+            if ($LASTEXITCODE -eq 0) {
+                Write-Host "$Name installed successfully." -ForegroundColor Green
+                Pause-Toolkit
+                return
+            }
+        }
+        catch {
+            Write-Host "WinGet installation failed: $_" -ForegroundColor Yellow
+        }
+    }
+
+    Write-Host "Installation was not completed. Opening the official download page."
+    Start-Process $Url
+    Pause-Toolkit
 }
 
 function Download-WordPress {
-    $dest = Join-Path $HOME "Downloads\wordpress-latest.zip"
-    $confirm = Read-Host "Download WordPress ZIP to Downloads? (Y/N)"
-    if ($confirm -notin @("Y","y")) { return }
+    Clear-Host
+    $destination = Join-Path $HOME "Downloads\wordpress.zip"
 
     try {
-        Invoke-WebRequest -Uri "https://wordpress.org/latest.zip" -OutFile $dest
-        Write-Host "Downloaded to: $dest"
-        Write-Host "This downloads the files; a web server is needed to run WordPress locally."
-    } catch {
-        Write-Host "Download failed: $($_.Exception.Message)"
+        Invoke-WebRequest -Uri "https://wordpress.org/latest.zip" -OutFile $destination
+        Write-Host "WordPress ZIP saved to $destination" -ForegroundColor Green
+        Start-Process explorer.exe -ArgumentList (Join-Path $HOME "Downloads")
+        Write-Host "WordPress needs a compatible web server, PHP, and a database to run."
+    }
+    catch {
+        Write-Host "Download failed. Opening the official download page." -ForegroundColor Yellow
+        Start-Process "https://wordpress.org/download/"
+    }
+
+    Pause-Toolkit
+}
+
+function Install-FloatingSandbox {
+    Clear-Host
+    $winget = Get-Command winget.exe -ErrorAction SilentlyContinue
+
+    if ($null -ne $winget) {
+        try {
+            & $winget.Source install --name "Floating Sandbox" --exact --source winget --accept-package-agreements --accept-source-agreements
+            if ($LASTEXITCODE -eq 0) {
+                Write-Host "WinGet reports that installation completed." -ForegroundColor Green
+                Pause-Toolkit
+                return
+            }
+        }
+        catch {
+            Write-Host "Automatic installation could not be completed." -ForegroundColor Yellow
+        }
+    }
+
+    Write-Host "Opening the game's download page."
+    Start-Process "https://gamejolt.com/games/floating-sandbox/353572"
+    Write-Host "Your browser controls where downloaded files are saved."
+    Pause-Toolkit
+}
+
+function Show-UtilitiesMenu {
+    while ($true) {
+        Clear-Host
+        Write-Host "===== UTILITIES =====" -ForegroundColor Cyan
+        Write-Host "1. System information"
+        Write-Host "2. Check storage"
+        Write-Host "3. Open temporary files folder"
+        Write-Host "0. Back"
+
+        $choice = Read-Host "Choose an option"
+        switch ($choice) {
+            "1" { Show-SystemInfo }
+            "2" { Show-Storage }
+            "3" { Open-TempFolder }
+            "0" { return }
+            default { Write-Host "Invalid choice."; Pause-Toolkit }
+        }
+    }
+}
+
+function Show-SettingsMenu {
+    while ($true) {
+        Clear-Host
+        Write-Host "===== SETTINGS AND CUSTOMIZATION =====" -ForegroundColor Cyan
+        Write-Host "1. Dark / light mode"
+        Write-Host "2. Taskbar alignment"
+        Write-Host "3. Personalization settings"
+        Write-Host "4. Mouse settings"
+        Write-Host "5. Keyboard settings"
+        Write-Host "6. Installed apps"
+        Write-Host "7. Network settings"
+        Write-Host "8. Windows Update"
+        Write-Host "0. Back"
+
+        $choice = Read-Host "Choose an option"
+        switch ($choice) {
+            "1" { Set-WindowsTheme }
+            "2" { Set-TaskbarAlignment }
+            "3" { Open-SettingsPage "Personalization" "ms-settings:personalization" }
+            "4" { Open-SettingsPage "Mouse" "ms-settings:mousetouchpad" }
+            "5" { Open-SettingsPage "Keyboard" "ms-settings:typing" }
+            "6" { Open-SettingsPage "Installed apps" "ms-settings:appsfeatures" }
+            "7" { Open-SettingsPage "Network" "ms-settings:network-status" }
+            "8" { Open-SettingsPage "Windows Update" "ms-settings:windowsupdate" }
+            "0" { return }
+            default { Write-Host "Invalid choice."; Pause-Toolkit }
+        }
+    }
+}
+
+function Show-SoftwareMenu {
+    while ($true) {
+        Clear-Host
+        Write-Host "===== SOFTWARE CENTER =====" -ForegroundColor Cyan
+        Write-Host "1. Install Firefox"
+        Write-Host "2. Install GitHub Desktop"
+        Write-Host "3. Install Git"
+        Write-Host "4. Install Visual Studio Code"
+        Write-Host "5. Download WordPress ZIP"
+        Write-Host "6. Open GitHub"
+        Write-Host "7. Open WordPress.com"
+        Write-Host "0. Back"
+
+        $choice = Read-Host "Choose an option"
+        switch ($choice) {
+            "1" { Install-Software "Firefox" "Mozilla.Firefox" "https://www.mozilla.org/firefox/" }
+            "2" { Install-Software "GitHub Desktop" "GitHub.GitHubDesktop" "https://desktop.github.com/" }
+            "3" { Install-Software "Git" "Git.Git" "https://git-scm.com/download/win" }
+            "4" { Install-Software "Visual Studio Code" "Microsoft.VisualStudioCode" "https://code.visualstudio.com/" }
+            "5" { Download-WordPress }
+            "6" { Start-Process "https://github.com/" }
+            "7" { Start-Process "https://wordpress.com/" }
+            "0" { return }
+            default { Write-Host "Invalid choice."; Pause-Toolkit }
+        }
+    }
+}
+
+function Show-GamesMenu {
+    while ($true) {
+        Clear-Host
+        Write-Host "===== DOWNLOAD GAMES =====" -ForegroundColor Cyan
+        Write-Host "1. Install Floating Sandbox"
+        Write-Host "0. Back"
+
+        $choice = Read-Host "Choose an option"
+        switch ($choice) {
+            "1" { Install-FloatingSandbox }
+            "0" { return }
+            default { Write-Host "Invalid choice."; Pause-Toolkit }
+        }
     }
 }
 
 while ($true) {
     Clear-Host
-    Write-Host "=================================="
-    Write-Host "   WINDOWS UTILITIES TOOLKIT"
-    Write-Host "=================================="
-    Write-Host "1. Windows system information"
-    Write-Host "2. Check storage"
-    Write-Host "3. Open temporary folder"
-    Write-Host "4. Install Firefox"
-    Write-Host "5. Install GitHub Desktop"
-    Write-Host "6. Install Git"
-    Write-Host "7. Install Visual Studio Code"
-    Write-Host "8. Download WordPress ZIP"
-    Write-Host "9. Open GitHub website"
-    Write-Host "10. Open WordPress.com"
+    Write-Host "====================================" -ForegroundColor Cyan
+    Write-Host "     WINDOWS 11 CUSTOMIZATION" -ForegroundColor Cyan
+    Write-Host "====================================" -ForegroundColor Cyan
+    Write-Host "1. Utilities"
+    Write-Host "2. Settings and customization"
+    Write-Host "3. Software center"
+    Write-Host "4. Download Games"
+    Write-Host "5. Uninstall programs"
     Write-Host "0. Exit"
-    Write-Host ""
 
     $choice = Read-Host "Choose an option"
 
     switch ($choice) {
-        "1" {
-            Get-ComputerInfo |
-                Select-Object WindowsProductName, WindowsVersion, OsArchitecture |
-                Format-List
-        }
-        "2" {
-            Get-PSDrive -PSProvider FileSystem |
-                Select-Object Name, Used, Free | Format-Table -AutoSize
-        }
-        "3" { Start-Process $env:TEMP }
-        "4" { Install-App "Firefox" "Mozilla.Firefox" "https://www.mozilla.org/firefox/" }
-        "5" { Install-App "GitHub Desktop" "GitHub.GitHubDesktop" "https://desktop.github.com/" }
-        "6" { Install-App "Git" "Git.Git" "https://git-scm.com/install/windows" }
-        "7" { Install-App "Visual Studio Code" "Microsoft.VisualStudioCode" "https://code.visualstudio.com/" }
-        "8" { Download-WordPress }
-        "9" { Start-Process "https://github.com/" }
-        "10" { Start-Process "https://wordpress.com/" }
-        "0" { break }
-        default { Write-Host "Choose a valid menu number." }
+        "1" { Show-UtilitiesMenu }
+        "2" { Show-SettingsMenu }
+        "3" { Show-SoftwareMenu }
+        "4" { Show-GamesMenu }
+        "5" { Start-Process "ms-settings:appsfeatures" }
+        "0" { exit }
+        default { Write-Host "Invalid choice."; Pause-Toolkit }
     }
-
-    if ($choice -eq "0") { break }
-    Write-Host ""
-    Read-Host "Press Enter to return to the menu" | Out-Null
 }
-'@ | Set-Content -Path $script -Encoding UTF8
-
-Write-Host "Toolkit created at: $script"
-& $script
