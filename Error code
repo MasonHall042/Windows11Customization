@@ -1,0 +1,4 @@
+If you get a text thats in red, Just copy and paste this code into powershell first then run the Windows11Customization script
+
+Copy and paste this line of code:
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
